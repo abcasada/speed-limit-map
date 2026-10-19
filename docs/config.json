@@ -1,0 +1,10 @@
+{
+  "tiles": "data/demo.pmtiles",
+  "view": { "center": [-112.6, 38.28], "zoom": 11 },
+  "bookmarks": [
+    { "name": "Utah - I-15 near Beaver (80 mph)", "center": [-112.6, 38.28], "zoom": 11 },
+    { "name": "Texas - Caldwell County", "center": [-97.65, 29.76], "zoom": 11 },
+    { "name": "Pennsylvania - Somerset", "center": [-79.05, 40.03], "zoom": 11 },
+    { "name": "California - Central Valley", "center": [-119.25, 36.18], "zoom": 11 }
+  ]
+}

@@ -1,0 +1,5 @@
+# build inputs / outputs (large)
+build/
+data/
+node_modules/
+*.osm.pbf
