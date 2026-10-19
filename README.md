@@ -2,8 +2,9 @@
 
 A zoomable map of every US road down to residential streets, coloured by posted speed limit, drawn from OpenStreetMap.
 
-- **Colour** = posted speed: white under 55 mph, then one colour per 5 mph step (55, 60, 65, 70, 75, 80, 85+).
-  Roads with no usable `maxspeed` tag are dim grey (toggle in the panel).
+- **Colour** = posted speed: white under 55 mph, then a continuous gradient from bright green at 55 through bright yellow
+  at 70 to bright red at 85 (a 62 mph limit is a yellowish green, an 80 an orange-red), and pink above 85. Roads with no
+  usable `maxspeed` tag are grey (toggle in the panel).
 - **Width** = number of lanes (OSM `lanes` tag). Roads without the tag fall back to a typical lane count for their class.
 - **Signs** = route shields: Interstate, US route and each state's own state-route shield (plus county routes, toll roads,
   business loops, ...), drawn by the [Americana shield renderer](https://github.com/osm-americana/openstreetmap-americana/tree/main/shieldlib).
@@ -11,6 +12,8 @@ A zoomable map of every US road down to residential streets, coloured by posted 
   [OpenFreeMap](https://openfreemap.org), fetched at runtime. If they cannot be reached the page shows a banner and falls
   back to a plain background. White (under 55 mph) roads get a dark outline so they stay visible on the light maps.
 - Tap/click a road for its speed, lanes, route and type.
+- **Fix-it mode** (switch at the top of the panel, or `?mode=fix`): instead of speeds, highlights roads an OpenStreetMap
+  contributor might want to check. See below.
 
 It is a static site (`docs/`) plus PMTiles files. No server code.
 
@@ -18,6 +21,7 @@ It is a static site (`docs/`) plus PMTiles files. No server code.
 tiles/HighwaySpeedProfile.java   Planetiler profile: OSM -> vector tiles with speed, lanes, route shield, rank
 tiles/build.sh                   download extract -> filter roads -> build data/us-highways.pmtiles
 tiles/shard.sh                   split a tileset into <100 MB files for git / GitHub Pages
+docs/qa-rules.js                 the fix-it mode rules (add new rules here)
 docs/                            the web app (MapLibre GL JS + PMTiles) and the published tiles (docs/data/roads-*.pmtiles,
                                  docs/data/routes.pmtiles)
 server.mjs                       local dev server (supports HTTP Range requests, which PMTiles needs)
@@ -44,6 +48,34 @@ Route shields come from a second, small tileset (`docs/data/routes.pmtiles`, 43 
 route, merged into long lines per route so shields are spaced evenly along it and can appear from the default zoom.
 They are drawn in tiers (Interstates from zoom 3, US routes from 5, state routes from 7, county and other routes from 11,
 each matching the zoom where those roads first appear), and collision detection hides whatever does not fit.
+
+## Fix-it mode
+
+Highlights, on a faint copy of every road, the things worth investigating or fixing in OpenStreetMap. Tap a road to see
+which rules flag it and to open that spot on openstreetmap.org or in the iD editor. Each rule can be switched on and off in
+the legend. Current rules:
+
+| rule | flags |
+|---|---|
+| No speed limit tagged | no `maxspeed` at all (the vast majority of small streets) |
+| maxspeed tag present but unreadable | a value that is not a plain number: lists, `signals`, free text (zoom 10+) |
+| Not a multiple of 5 mph | e.g. 24 or 62 mph, almost always a typo or a km/h value converted to mph |
+| Implausible: over 85 mph | no US road is posted above 85 |
+| Implausible: street at 60+ mph | residential / living street |
+| Implausible: minor road at 70+ mph | unclassified road |
+| Implausible: freeway at 10 mph or less | motorway (ramps share this class, see below) |
+
+The thresholds come from looking at the data: residential roads at 55 mph are common on rural roads that are probably
+just mis-classified (about 7,700 segments), whereas 60+ is only about 140.
+
+**Adding a rule:** append an object to `QA_RULES` in `docs/qa-rules.js` (id, label, description, colour and a MapLibre
+filter expression over the properties in the tiles; the file documents which properties exist). Rules run in the browser,
+so no tile rebuild is needed. The legend, per-rule checkboxes, map layers and popup text all come from that list.
+Ideas that need more data in the tiles first (ramps, adjacent-segment comparisons, conditional limits, ...) are listed in
+`PLANNED_RULES` in the same file along with what each would need added to the tile profile.
+
+Limits of the current rules: tiles store ramps under their parent class, so a freeway-speed check cannot tell a slow
+ramp from a slow freeway (hence the low threshold), and the raw `maxspeed` text is only in the tiles from zoom 10.
 
 ## Rebuild the tiles
 

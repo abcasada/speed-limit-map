@@ -1,4 +1,5 @@
 import { URLShieldRenderer } from './vendor/maplibre-shield-generator.js';
+import { QA_RULES } from './qa-rules.js';
 
 // ---- configuration -------------------------------------------------------------------------------------------------
 
@@ -13,19 +14,20 @@ const tilesUrls = [tileSpec].flat().map((t) => new URL(t.trim(), location.href).
 const routeSpec = params.get('routes')?.split(',') ?? config.routes ?? [];
 const routesUrls = [routeSpec].flat().filter(Boolean).map((t) => new URL(t.trim(), location.href).href);
 
-// One colour per 5 mph step from 55 to 85; anything below 55 is white. Roads without a usable maxspeed are grey.
-const SPEED_COLORS = [
-  [55, '#3d8bff'],
-  [60, '#19d3da'],
-  [65, '#3ddc6a'],
-  [70, '#f2e03a'],
-  [75, '#ff9f1a'],
-  [80, '#ff4d4d'],
-  [85, '#e040fb'],
-];
+// Speed colours: white below 55 mph, then a continuous gradient from bright green at 55 through bright yellow at 70 to
+// bright red at 85 (so a 62 mph limit is a yellowish green and an 80 is an orange-red), pink above 85. Roads without a
+// usable maxspeed use the basemap's "no data" grey (see BASEMAPS).
+const GRADIENT = [[55, '#00e03c'], [70, '#ffe600'], [85, '#ff1a1a']];
 const BELOW_COLOR = '#ffffff';
+const OVER_COLOR = '#ff66cc';
 
-const speedColor = ['step', ['to-number', ['get', 'speed']], BELOW_COLOR, ...SPEED_COLORS.flat()];
+const speedNumber = ['to-number', ['get', 'speed']];
+const speedColor = [
+  'case',
+  ['<', speedNumber, GRADIENT[0][0]], BELOW_COLOR,
+  ['>', speedNumber, GRADIENT.at(-1)[0]], OVER_COLOR,
+  ['interpolate', ['linear'], speedNumber, ...GRADIENT.flat()],
+];
 
 // Width is proportional to the OSM `lanes` tag. Roads without the tag fall back to a typical lane count for their class.
 const laneCount = [
@@ -101,7 +103,7 @@ const SHIELD_TIERS = [
 function buildRoadLayers(theme) {
   const base = (source) => ({ source, 'source-layer': 'highways' });
   const line = () => ({ 'line-cap': 'round', 'line-join': 'round', 'line-sort-key': ['get', 'rk'] });
-  const layers = { unknown: [], casing: [], known: [], shields: [] };
+  const layers = { unknown: [], casing: [], known: [], qaContext: [], qa: [], shields: [] };
   for (const source of Object.keys(roadSources)) {
     layers.unknown.push({
       id: `roads-unknown-${source}`, type: 'line', ...base(source),
@@ -121,6 +123,22 @@ function buildRoadLayers(theme) {
       layout: line(),
       paint: { 'line-color': speedColor, 'line-width': laneWidth() },
     });
+  }
+  // Fix-it mode: every road as faint context, then one layer per rule from qa-rules.js (hidden until that mode is on)
+  for (const source of Object.keys(roadSources)) {
+    layers.qaContext.push({
+      id: `qa-context-${source}`, type: 'line', ...base(source),
+      layout: line(),
+      paint: { 'line-color': theme.unknown, 'line-opacity': 0.5, 'line-width': laneWidth() },
+    });
+    for (const rule of QA_RULES) {
+      layers.qa.push({
+        id: `qa-${rule.id}-${source}`, type: 'line', ...base(source), minzoom: rule.minzoom ?? 0,
+        filter: rule.filter,
+        layout: line(),
+        paint: { 'line-color': rule.color, 'line-width': laneWidth(rule.extraWidth ?? 0.8) },
+      });
+    }
   }
   for (const source of Object.keys(shieldSources)) {
     for (const { rk, minzoom } of SHIELD_TIERS) {
@@ -142,6 +160,7 @@ function buildRoadLayers(theme) {
 }
 let roadLayers = buildRoadLayers(BASEMAPS[themeName]);
 const layerIds = (kind) => roadLayers[kind].map((l) => l.id);
+const ruleLayerIds = (rule) => Object.keys(roadSources).map((source) => `qa-${rule.id}-${source}`);
 
 const baseStyleCache = {};
 async function loadBaseStyle(name) {
@@ -174,7 +193,7 @@ function composeStyle(base, theme) {
   roadLayers = buildRoadLayers(theme);
   // above every base fill/line (so base roads and landuse never cover ours); the base map's labels stay on top
   const at = style.layers.findLastIndex((l) => l.type !== 'symbol') + 1;
-  style.layers.splice(at, 0, ...roadLayers.unknown, ...roadLayers.casing, ...roadLayers.known);
+  style.layers.splice(at, 0, ...roadLayers.unknown, ...roadLayers.casing, ...roadLayers.known, ...roadLayers.qaContext, ...roadLayers.qa);
   style.layers.push(...roadLayers.shields);
   return style;
 }
@@ -243,7 +262,7 @@ async function styleFor(name) {
     const style = fallbackStyle();
     style.sources = { ...roadSources, ...routeSources };
     roadLayers = buildRoadLayers(BASEMAPS[name]);
-    style.layers.push(...roadLayers.unknown, ...roadLayers.casing, ...roadLayers.known, ...roadLayers.shields);
+    style.layers.push(...roadLayers.unknown, ...roadLayers.casing, ...roadLayers.known, ...roadLayers.qaContext, ...roadLayers.qa, ...roadLayers.shields);
     return style;
   }
 }
@@ -265,18 +284,31 @@ map.addControl(new maplibregl.ScaleControl({ unit: 'imperial' }), 'bottom-right'
 map.touchZoomRotate.disableRotation();
 map.dragRotate.disable();
 
-// panel toggles survive basemap switches
+// ---- modes and layer visibility ------------------------------------------------------------------------------------
+
+// "speed": roads coloured by posted limit. "fix": roads that may need fixing in OpenStreetMap (rules in qa-rules.js).
+let mode = params.get('mode') === 'fix' ? 'fix' : 'speed';
+// panel state survives basemap and mode switches
 const toggles = { unknown: true, shields: true };
-const applyToggles = () => {
-  for (const kind of Object.keys(toggles)) {
-    for (const id of layerIds(kind)) {
-      if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', toggles[kind] ? 'visible' : 'none');
-    }
+const qaEnabled = new Set(QA_RULES.map((rule) => rule.id));
+
+const setVisible = (ids, visible) => {
+  for (const id of ids) {
+    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', visible ? 'visible' : 'none');
   }
 };
+function applyVisibility() {
+  const fix = mode === 'fix';
+  setVisible(layerIds('casing'), !fix);
+  setVisible(layerIds('known'), !fix);
+  setVisible(layerIds('unknown'), !fix && toggles.unknown);
+  setVisible(layerIds('qaContext'), fix);
+  for (const rule of QA_RULES) setVisible(ruleLayerIds(rule), fix && qaEnabled.has(rule.id));
+  setVisible(layerIds('shields'), toggles.shields);
+}
 map.on('style.load', () => {
   addSpriteImages(map);
-  applyToggles();
+  applyVisibility();
 });
 
 const shieldParser = {
@@ -321,29 +353,69 @@ function describe(props) {
   return rows;
 }
 
-const hitLayers = () => [...layerIds('known'), ...layerIds('unknown')].filter((id) => map.getLayer(id));
+// all road layers that can be tapped; layers that are hidden in the current mode simply return nothing
+const hitLayers = () => [...layerIds('qa'), ...layerIds('qaContext'), ...layerIds('known'), ...layerIds('unknown')]
+  .filter((id) => map.getLayer(id));
+
+const sameProps = (a, b) => {
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every((k) => a[k] === b[k]);
+};
+
+/** Rules that flag this feature. Rules only look at a feature's properties, so any rendered feature with identical
+ *  properties in a rule's layer means the rule flags it. */
+function flaggedRules(box, props) {
+  return QA_RULES.filter((rule) => qaEnabled.has(rule.id)
+    && map.queryRenderedFeatures(box, { layers: ruleLayerIds(rule).filter((id) => map.getLayer(id)) })
+      .some((f) => sameProps(f.properties, props)));
+}
+
+function element(tag, text, className) {
+  const el = document.createElement(tag);
+  el.textContent = text;
+  if (className) el.className = className;
+  return el;
+}
 
 map.on('click', (e) => {
   const pad = 8;
-  const hits = map.queryRenderedFeatures([[e.point.x - pad, e.point.y - pad], [e.point.x + pad, e.point.y + pad]], {
-    layers: hitLayers(),
-  });
+  const box = [[e.point.x - pad, e.point.y - pad], [e.point.x + pad, e.point.y + pad]];
+  const hits = map.queryRenderedFeatures(box, { layers: hitLayers() });
   if (!hits.length) return;
   const props = hits[0].properties;
 
-  const box = document.createElement('div');
-  const title = document.createElement('h3');
-  title.textContent = props.name || props.ref || ROAD_CLASS[props.hw] || 'Road';
+  const content = document.createElement('div');
+  content.append(element('h3', props.name || props.ref || ROAD_CLASS[props.hw] || 'Road'));
   const list = document.createElement('dl');
-  for (const [k, v] of describe(props)) {
-    const dt = document.createElement('dt');
-    dt.textContent = k;
-    const dd = document.createElement('dd');
-    dd.textContent = v;
-    list.append(dt, dd);
+  for (const [k, v] of describe(props)) list.append(element('dt', k), element('dd', v));
+  content.append(list);
+
+  if (mode === 'fix') {
+    const flags = flaggedRules(box, props);
+    content.append(element('h4', flags.length ? 'Flagged because' : 'Not flagged by any enabled rule'));
+    if (flags.length) {
+      const ul = document.createElement('ul');
+      for (const rule of flags) {
+        const li = element('li', rule.label);
+        li.title = rule.description;
+        li.style.setProperty('--dot', rule.color);
+        ul.append(li);
+      }
+      content.append(ul);
+    }
+    const where = `19/${e.lngLat.lat.toFixed(6)}/${e.lngLat.lng.toFixed(6)}`;
+    const links = element('p', '', 'links');
+    for (const [label, url] of [['View on OpenStreetMap', `https://www.openstreetmap.org/#map=${where}`],
+      ['Edit in iD', `https://www.openstreetmap.org/edit#map=${where}`]]) {
+      const a = element('a', label);
+      a.href = url;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      links.append(a);
+    }
+    content.append(links);
   }
-  box.append(title, list);
-  new maplibregl.Popup({ maxWidth: '260px' }).setLngLat(e.lngLat).setDOMContent(box).addTo(map);
+  new maplibregl.Popup({ maxWidth: '280px' }).setLngLat(e.lngLat).setDOMContent(content).addTo(map);
 });
 map.on('mousemove', (e) => {
   const hit = map.queryRenderedFeatures([[e.point.x - 4, e.point.y - 4], [e.point.x + 4, e.point.y + 4]], { layers: hitLayers() });
@@ -353,29 +425,85 @@ map.on('mousemove', (e) => {
 // ---- panel ---------------------------------------------------------------------------------------------------------
 
 const legend = document.getElementById('legend');
-function renderLegend() {
-  const rows = [
-    [BELOW_COLOR, 'under 55'],
-    ...SPEED_COLORS.map(([mph, color], i) => [color, i === SPEED_COLORS.length - 1 ? `${mph}+` : `${mph}`]),
-    [BASEMAPS[themeName].unknown, 'no data'],
-  ];
-  legend.replaceChildren(...rows.map(([color, label]) => {
-    const li = document.createElement('li');
-    const swatch = document.createElement('span');
-    swatch.className = 'swatch';
-    swatch.style.background = color;
-    swatch.style.outline = '1px solid rgba(0, 0, 0, 0.55)';
-    li.append(swatch, document.createTextNode(label));
-    return li;
-  }));
+const note = document.getElementById('note');
+const speedOptions = document.getElementById('speed-options');
+const modeButtons = [...document.querySelectorAll('[data-mode]')];
+
+const NOTES = {
+  speed: 'Line width = number of lanes tagged in OpenStreetMap. Signs show the route (Interstate, US, state).',
+  fix: 'Roads that may need fixing in OpenStreetMap. Faint grey = nothing flagged. Tap a road to see why it is flagged '
+    + 'and open it in OSM. Rules are in docs/qa-rules.js.',
+};
+
+function swatch(color) {
+  const el = document.createElement('span');
+  el.className = 'swatch';
+  el.style.background = color;
+  return el;
 }
-renderLegend();
+
+function renderLegend() {
+  note.textContent = NOTES[mode];
+  speedOptions.hidden = mode === 'fix';
+  if (mode === 'fix') {
+    const ul = document.createElement('ul');
+    ul.className = 'rules';
+    for (const rule of QA_RULES) {
+      const label = document.createElement('label');
+      label.title = rule.description;
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.checked = qaEnabled.has(rule.id);
+      box.addEventListener('change', () => {
+        if (box.checked) qaEnabled.add(rule.id); else qaEnabled.delete(rule.id);
+        applyVisibility();
+      });
+      label.append(box, swatch(rule.color), document.createTextNode(rule.label));
+      const li = document.createElement('li');
+      li.append(label);
+      ul.append(li);
+    }
+    legend.replaceChildren(ul);
+    return;
+  }
+  const [lo, mid, hi] = GRADIENT;
+  const bar = document.createElement('div');
+  bar.className = 'bar';
+  bar.style.background = `linear-gradient(to right, ${GRADIENT.map(([mph, color]) => `${color} ${((mph - lo[0]) / (hi[0] - lo[0])) * 100}%`).join(', ')})`;
+  const ticks = document.createElement('div');
+  ticks.className = 'ticks';
+  ticks.append(element('span', `${lo[0]} mph`), element('span', `${mid[0]}`), element('span', `${hi[0]} mph`));
+  const gradient = document.createElement('div');
+  gradient.className = 'gradient';
+  gradient.append(bar, ticks);
+  const chips = document.createElement('ul');
+  chips.className = 'chips';
+  for (const [color, text] of [[BELOW_COLOR, `under ${lo[0]}`], [OVER_COLOR, `over ${hi[0]}`], [BASEMAPS[themeName].unknown, 'no data']]) {
+    const li = document.createElement('li');
+    li.append(swatch(color), document.createTextNode(text));
+    chips.append(li);
+  }
+  legend.replaceChildren(gradient, chips);
+}
+
+function setMode(next) {
+  mode = next;
+  for (const button of modeButtons) button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
+  const url = new URL(location.href);
+  if (mode === 'fix') url.searchParams.set('mode', 'fix'); else url.searchParams.delete('mode');
+  history.replaceState(null, '', url);
+  document.querySelectorAll('.maplibregl-popup').forEach((el) => el.remove());
+  renderLegend();
+  applyVisibility();
+}
+for (const button of modeButtons) button.addEventListener('click', () => setMode(button.dataset.mode));
+setMode(mode);
 
 const panel = document.getElementById('panel');
 if (matchMedia('(max-width: 600px)').matches) panel.open = false;
 
-document.getElementById('toggle-unknown').addEventListener('change', (e) => { toggles.unknown = e.target.checked; applyToggles(); });
-document.getElementById('toggle-shields').addEventListener('change', (e) => { toggles.shields = e.target.checked; applyToggles(); });
+document.getElementById('toggle-unknown').addEventListener('change', (e) => { toggles.unknown = e.target.checked; applyVisibility(); });
+document.getElementById('toggle-shields').addEventListener('change', (e) => { toggles.shields = e.target.checked; applyVisibility(); });
 
 const basemapPicker = document.getElementById('basemap');
 for (const [name, theme] of Object.entries(BASEMAPS)) basemapPicker.append(new Option(theme.label, name));

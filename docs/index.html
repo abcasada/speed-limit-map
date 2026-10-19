@@ -14,10 +14,16 @@
 
   <details id="panel" open>
     <summary>Speed limit (mph)</summary>
+    <div class="seg" role="group" aria-label="Mode">
+      <button type="button" data-mode="speed" aria-pressed="true">Speed map</button>
+      <button type="button" data-mode="fix" aria-pressed="false" title="Highlight roads that may need fixing in OpenStreetMap">Fix-it mode</button>
+    </div>
     <label class="row">Map <select id="basemap" aria-label="Basemap"></select></label>
-    <ul id="legend"></ul>
-    <p class="note">Line width = number of lanes tagged in OpenStreetMap. Signs show the route (Interstate, US, state).</p>
-    <label><input type="checkbox" id="toggle-unknown" checked> Show roads with no speed data</label>
+    <div id="legend"></div>
+    <p class="note" id="note"></p>
+    <div id="speed-options">
+      <label><input type="checkbox" id="toggle-unknown" checked> Show roads with no speed data</label>
+    </div>
     <label><input type="checkbox" id="toggle-shields" checked> Show route signs</label>
     <select id="bookmarks" aria-label="Jump to place" hidden></select>
   </details>
