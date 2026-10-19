@@ -32,7 +32,7 @@ node server.mjs            # http://localhost:8080/
 
 Repository **Settings -> Pages -> Build and deployment -> Source: Deploy from a branch**, pick the branch and the
 **/docs** folder. The site is then at `https://<user>.github.io/<repo>/`. Everything it needs is vendored under `docs/`
-(MapLibre, PMTiles, shield renderer and artwork, road tiles); the only third-party requests are the dark basemap tiles and
+(MapLibre, PMTiles, shield renderer and artwork, road tiles); the only third-party requests are the basemap styles, tiles and
 fonts from OpenFreeMap.
 
 The committed tileset (`docs/data/roads-1..6.pmtiles`, 414 MB in total) covers all US roads up to **zoom 12 data, which the
