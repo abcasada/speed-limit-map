@@ -54,16 +54,19 @@ const BASEMAPS = {
     label: 'Light', url: `${OFM}/styles/positron`,
     unknown: '#9aa4af', unknownOpacity: 1,
     casing: '#2b323b', casingOpacity: 0.85, casingExtra: 1.6, casingMinZoom: 6,
+    boundary: '#5d6b7d',
   },
   streets: {
     label: 'Streets', url: `${OFM}/styles/liberty`,
     unknown: '#7d8791', unknownOpacity: 0.45,
     casing: '#2b323b', casingOpacity: 0.85, casingExtra: 1.6, casingMinZoom: 6,
+    boundary: '#6a5f86',
   },
   dark: {
     label: 'Dark', url: `${OFM}/styles/dark`,
     unknown: '#5f6b7a', unknownOpacity: 1,
     casing: '#05080b', casingOpacity: 0.7, casingExtra: 1.2, casingMinZoom: 8,
+    boundary: '#9aa7ba',
   },
 };
 
@@ -203,17 +206,42 @@ const fallbackStyle = () => ({
   layers: [{ id: 'background', type: 'background', paint: { 'background-color': themeName === 'dark' ? '#0b0f14' : '#e9ecef' } }],
 });
 
+/**
+ * State (admin level 4) boundaries drawn the same way on every basemap. The base styles hide them until zoom 5-8 or draw
+ * them in a colour that barely differs from the background, so their own state-boundary layers are switched off.
+ */
+const stateBoundaries = (theme) => ({
+  id: 'state-boundaries', type: 'line', source: 'openmaptiles', 'source-layer': 'boundary', minzoom: 3,
+  filter: ['all', ['==', ['get', 'admin_level'], 4], ['!=', ['get', 'maritime'], 1], ['!=', ['get', 'disputed'], 1]],
+  paint: {
+    'line-color': theme.boundary,
+    'line-opacity': ['interpolate', ['linear'], ['zoom'], 3, 0.5, 5, 0.9],
+    'line-width': ['interpolate', ['linear'], ['zoom'], 3, 1, 6, 1.4, 10, 2, 16, 3.5],
+    'line-dasharray': [4, 2.5],
+  },
+});
+
 function composeStyle(base, theme) {
   const style = structuredClone(base);
   style.sources = { ...style.sources, ...roadSources, ...routeSources };
-  // the base map's own route-number signs would duplicate ours
   for (const layer of style.layers) {
+    // the base map's own route-number signs would duplicate ours
     if (layer.id.includes('shield')) layer.layout = { ...layer.layout, visibility: 'none' };
+    if (layer['source-layer'] === 'boundary' && layer.type === 'line') {
+      if (layer.id === 'boundary_state') {
+        layer.layout = { ...layer.layout, visibility: 'none' };
+      } else if (layer.id === 'boundary_3') {
+        // keeps the lesser (county-level) lines but leaves states to our layer
+        layer.filter = ['all', layer.filter, ['!=', ['get', 'admin_level'], 4]];
+      }
+    }
   }
   roadLayers = buildRoadLayers(theme);
   // above every base fill/line (so base roads and landuse never cover ours); the base map's labels stay on top
   const at = style.layers.findLastIndex((l) => l.type !== 'symbol') + 1;
-  style.layers.splice(at, 0, ...roadLayers.unknown, ...roadLayers.casing, ...roadLayers.known, ...roadLayers.qaContext, ...roadLayers.qa);
+  const boundaries = style.sources.openmaptiles ? [stateBoundaries(theme)] : [];
+  // state lines go on top of the roads (a line that runs along a state-line road must not be hidden by it), under shields and labels
+  style.layers.splice(at, 0, ...roadLayers.unknown, ...roadLayers.casing, ...roadLayers.known, ...roadLayers.qaContext, ...roadLayers.qa, ...boundaries);
   style.layers.push(...roadLayers.shields);
   return style;
 }

@@ -11,6 +11,8 @@ A zoomable map of every US road down to residential streets, coloured by posted 
 - **Basemaps** (selector in the panel): Light (default), Streets and Dark, the full OpenStreetMap-based vector styles from
   [OpenFreeMap](https://openfreemap.org), fetched at runtime. If they cannot be reached the page shows a banner and falls
   back to a plain background. White (under 55 mph) roads get a dark outline so they stay visible on the light maps.
+  State boundaries are drawn by the app itself (dashed, from zoom 3 up) because the base styles hide them below zoom 5-8
+  or draw them almost invisibly.
 - Tap/click a road for its speed, lanes, route and type.
 - **Fix-it mode** (switch at the top of the panel, or `?mode=fix`): instead of speeds, highlights roads an OpenStreetMap
   contributor might want to check. See below.
