@@ -49,5 +49,9 @@ fi
 java -Xmx"$HEAP" -cp "$JAR" tiles/HighwaySpeedProfile.java \
   --osm_path="$ROADS" --output=data/us-highways.pmtiles --tmpdir="$WORK/tmp" --force "$@"
 
-echo "Done: data/us-highways.pmtiles ($(du -h data/us-highways.pmtiles | cut -f1))"
-echo "Try it: node server.mjs, then open http://localhost:8080/?tiles=/data/us-highways.pmtiles"
+# Companion tileset used only to place route shields evenly along each route (see HighwaySpeedProfile.java).
+java -Xmx"$HEAP" -cp "$JAR" tiles/HighwaySpeedProfile.java \
+  --osm_path="$ROADS" --output=data/us-routes.pmtiles --tmpdir="$WORK/tmp" --force --routes_only=true "$@"
+
+echo "Done: data/us-highways.pmtiles ($(du -h data/us-highways.pmtiles | cut -f1)), data/us-routes.pmtiles ($(du -h data/us-routes.pmtiles | cut -f1))"
+echo "Try it: node server.mjs, then open http://localhost:8080/?tiles=/data/us-highways.pmtiles&routes=/data/us-routes.pmtiles"

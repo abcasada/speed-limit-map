@@ -18,7 +18,8 @@ It is a static site (`docs/`) plus PMTiles files. No server code.
 tiles/HighwaySpeedProfile.java   Planetiler profile: OSM -> vector tiles with speed, lanes, route shield, rank
 tiles/build.sh                   download extract -> filter roads -> build data/us-highways.pmtiles
 tiles/shard.sh                   split a tileset into <100 MB files for git / GitHub Pages
-docs/                            the web app (MapLibre GL JS + PMTiles) and the published tiles (docs/data/roads-*.pmtiles)
+docs/                            the web app (MapLibre GL JS + PMTiles) and the published tiles (docs/data/roads-*.pmtiles,
+                                 docs/data/routes.pmtiles)
 server.mjs                       local dev server (supports HTTP Range requests, which PMTiles needs)
 ```
 
@@ -39,6 +40,11 @@ The committed tileset (`docs/data/roads-1..6.pmtiles`, 414 MB in total) covers a
 map overzooms** for street-level views. It is split into six west-to-east files because GitHub rejects files over 100 MB;
 Pages itself allows about 1 GB per site.
 
+Route shields come from a second, small tileset (`docs/data/routes.pmtiles`, 43 MB): only roads that belong to a signed
+route, merged into long lines per route so shields are spaced evenly along it and can appear from the default zoom.
+They are drawn in tiers (Interstates from zoom 3, US routes from 5, state routes from 7, county and other routes from 11,
+each matching the zoom where those roads first appear), and collision detection hides whatever does not fit.
+
 ## Rebuild the tiles
 
 ```sh
@@ -47,10 +53,10 @@ Pages itself allows about 1 GB per site.
 ```
 
 For a bigger local-only build with deeper data (zoom 14, about 1.7 GB, sharper geometry when zoomed far in), run
-`./tiles/build.sh` and open `http://localhost:8080/?tiles=/data/us-highways.pmtiles`. `--minor=false` leaves out
+`./tiles/build.sh` and open `http://localhost:8080/?tiles=/data/us-highways.pmtiles&routes=/data/us-routes.pmtiles`. `--minor=false` leaves out
 unclassified and residential streets (173 MB at zoom 12). Details and knobs are in the header of `tiles/build.sh`.
 
-`?tiles=a.pmtiles,b.pmtiles` points the app at any PMTiles files served with HTTP Range support (own server, S3,
+`?tiles=a.pmtiles,b.pmtiles&routes=r.pmtiles` points the app at any PMTiles files served with HTTP Range support (own server, S3,
 Cloudflare R2, ...). Edit `docs/config.json` to change the default.
 
 Measured on a 4-core, 15 GB machine: the full US build takes about 5 minutes once the roads-only extract exists

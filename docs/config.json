@@ -7,14 +7,72 @@
     "data/roads-5.pmtiles",
     "data/roads-6.pmtiles"
   ],
-  "view": { "center": [-96.5, 38.5], "zoom": 4 },
+  "routes": [
+    "data/routes.pmtiles"
+  ],
+  "view": {
+    "center": [
+      -96.5,
+      38.5
+    ],
+    "zoom": 4
+  },
   "bookmarks": [
-    { "name": "Austin, TX - SH 130 (85 mph)", "center": [-97.69, 30.03], "zoom": 11 },
-    { "name": "Utah - I-80 (80 mph)", "center": [-112.37, 40.68], "zoom": 11 },
-    { "name": "Denver, CO", "center": [-104.99, 39.74], "zoom": 10 },
-    { "name": "Los Angeles, CA", "center": [-118.25, 34.05], "zoom": 10 },
-    { "name": "Chicago, IL", "center": [-87.65, 41.88], "zoom": 10 },
-    { "name": "Atlanta, GA", "center": [-84.39, 33.75], "zoom": 10 },
-    { "name": "New York, NY", "center": [-74.0, 40.72], "zoom": 10 }
+    {
+      "name": "Austin, TX - SH 130 (85 mph)",
+      "center": [
+        -97.69,
+        30.03
+      ],
+      "zoom": 11
+    },
+    {
+      "name": "Utah - I-80 (80 mph)",
+      "center": [
+        -112.37,
+        40.68
+      ],
+      "zoom": 11
+    },
+    {
+      "name": "Denver, CO",
+      "center": [
+        -104.99,
+        39.74
+      ],
+      "zoom": 10
+    },
+    {
+      "name": "Los Angeles, CA",
+      "center": [
+        -118.25,
+        34.05
+      ],
+      "zoom": 10
+    },
+    {
+      "name": "Chicago, IL",
+      "center": [
+        -87.65,
+        41.88
+      ],
+      "zoom": 10
+    },
+    {
+      "name": "Atlanta, GA",
+      "center": [
+        -84.39,
+        33.75
+      ],
+      "zoom": 10
+    },
+    {
+      "name": "New York, NY",
+      "center": [
+        -74.0,
+        40.72
+      ],
+      "zoom": 10
+    }
   ]
 }

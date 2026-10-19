@@ -8,6 +8,10 @@ const config = await fetch('config.json').then((r) => r.json()).catch(() => ({})
 // GitHub's 100 MB file limit). ?tiles=a.pmtiles,b.pmtiles overrides the config.
 const tileSpec = params.get('tiles')?.split(',') ?? config.tiles ?? 'data/us-highways.pmtiles';
 const tilesUrls = [tileSpec].flat().map((t) => new URL(t.trim(), location.href).href);
+// Optional companion tiles with just the signed routes, used to place shields evenly along each route and from low
+// zooms. Without them shields come from the main road tiles (and only appear from zoom 6).
+const routeSpec = params.get('routes')?.split(',') ?? config.routes ?? [];
+const routesUrls = [routeSpec].flat().filter(Boolean).map((t) => new URL(t.trim(), location.href).href);
 
 // One colour per 5 mph step from 55 to 85; anything below 55 is white. Roads without a usable maxspeed are grey.
 const SPEED_COLORS = [
@@ -75,6 +79,22 @@ const roadAttribution = '<a href="https://www.openstreetmap.org/copyright" targe
 const roadSources = Object.fromEntries(
   tilesUrls.map((url, i) => [`roads${i}`, { type: 'vector', url: `pmtiles://${url}`, attribution: roadAttribution }]),
 );
+const routeSources = Object.fromEntries(
+  routesUrls.map((url, i) => [`routes${i}`, { type: 'vector', url: `pmtiles://${url}`, attribution: roadAttribution }]),
+);
+const shieldSources = routesUrls.length ? routeSources : roadSources;
+const shieldSourceLayer = routesUrls.length ? 'routes' : 'highways';
+
+// Shields are drawn in tiers by route rank (4 Interstate, 3 US, 2 state, 1 county/other). Each tier starts at the zoom
+// where its roads first appear on the map (see minZoom() in the tile profile), so a shield never floats over nothing.
+// Collision detection then shows as many as fit without overlapping: layers further down the list win, so Interstates
+// are placed first, then US routes, and so on, and the lesser routes only fill whatever room is left.
+const SHIELD_TIERS = [
+  { rk: 1, minzoom: 11 },
+  { rk: 2, minzoom: 7 },
+  { rk: 3, minzoom: 5 },
+  { rk: 4, minzoom: 3 },
+];
 
 // Layers are created per tile file. Within each kind: no-data roads first so roads with a known limit draw on top;
 // higher route rank draws above lower.
@@ -101,18 +121,22 @@ function buildRoadLayers(theme) {
       layout: line(),
       paint: { 'line-color': speedColor, 'line-width': laneWidth() },
     });
-    layers.shields.push({
-      id: `shields-${source}`, type: 'symbol', ...base(source), minzoom: 6,
-      filter: ['has', 'sh'],
-      layout: {
-        'symbol-placement': 'line',
-        'symbol-spacing': 420,
-        'icon-image': ['image', ['concat', 'shield|', ['get', 'sh']]],
-        'icon-rotation-alignment': 'viewport',
-        'icon-size': ['interpolate', ['linear'], ['zoom'], 6, 0.5, 10, 0.65, 14, 0.85, 18, 1],
-        'symbol-sort-key': ['-', 5, ['get', 'rk']],
-      },
-    });
+  }
+  for (const source of Object.keys(shieldSources)) {
+    for (const { rk, minzoom } of SHIELD_TIERS) {
+      layers.shields.push({
+        id: `shields-${rk}-${source}`, type: 'symbol', source, 'source-layer': shieldSourceLayer, minzoom,
+        filter: ['all', ['has', 'sh'], ['==', ['get', 'rk'], rk]],
+        layout: {
+          'symbol-placement': 'line',
+          'symbol-spacing': ['interpolate', ['linear'], ['zoom'], 2, 200, 6, 280, 12, 380],
+          'icon-image': ['image', ['concat', 'shield|', ['get', 'sh']]],
+          'icon-rotation-alignment': 'viewport',
+          'icon-padding': 6,
+          'icon-size': ['interpolate', ['linear'], ['zoom'], 2, 0.4, 6, 0.5, 10, 0.65, 14, 0.85, 18, 1],
+        },
+      });
+    }
   }
   return layers;
 }
@@ -142,7 +166,7 @@ const fallbackStyle = () => ({
 
 function composeStyle(base, theme) {
   const style = structuredClone(base);
-  style.sources = { ...style.sources, ...roadSources };
+  style.sources = { ...style.sources, ...roadSources, ...routeSources };
   // the base map's own route-number signs would duplicate ours
   for (const layer of style.layers) {
     if (layer.id.includes('shield')) layer.layout = { ...layer.layout, visibility: 'none' };
@@ -217,7 +241,7 @@ async function styleFor(name) {
   } catch (e) {
     showStatus(`Could not load the "${BASEMAPS[name].label}" basemap (${e.message || e}); showing a plain background.`);
     const style = fallbackStyle();
-    style.sources = { ...roadSources };
+    style.sources = { ...roadSources, ...routeSources };
     roadLayers = buildRoadLayers(BASEMAPS[name]);
     style.layers.push(...roadLayers.unknown, ...roadLayers.casing, ...roadLayers.known, ...roadLayers.shields);
     return style;

@@ -37,6 +37,7 @@ public class HighwaySpeedProfile implements Profile {
   record RouteRelation(long id, String network, String ref) implements OsmRelationInfo {}
 
   private static final String LAYER = "highways";
+  private static final String ROUTES_LAYER = "routes";
   private static final Pattern SPEED = Pattern.compile("^(\\d+(?:\\.\\d+)?)\\s*([a-z/]*)$");
   private static final Pattern WAY_REF = Pattern.compile("^([A-Z]{1,2})[ -]?(\\d+[A-Z]?)$");
   private static final Set<String> STATES = Set.of(
@@ -46,10 +47,12 @@ public class HighwaySpeedProfile implements Profile {
 
   private final boolean includeMinor;
   private final int maxZoom;
+  private final boolean routesOnly;
 
-  HighwaySpeedProfile(boolean includeMinor, int maxZoom) {
+  HighwaySpeedProfile(boolean includeMinor, int maxZoom, boolean routesOnly) {
     this.includeMinor = includeMinor;
     this.maxZoom = maxZoom;
+    this.routesOnly = routesOnly;
   }
 
   @Override
@@ -117,6 +120,23 @@ public class HighwaySpeedProfile implements Profile {
       }
     }
 
+    if (routesOnly) {
+      // Companion tileset used only to place shields: one "routes" layer holding just the roads that belong to a signed
+      // route. Without speed or lane attributes, neighbouring ways of a route merge into long lines, so shields are
+      // spaced evenly along each route instead of restarting wherever the speed limit changes.
+      if (network != null && !link) {
+        features.line(ROUTES_LAYER)
+          // never earlier than the road itself appears on the main map, or its shield would float over nothing
+          .setMinZoom(Math.max(routeMinZoom(rank), minZoom(base, false, rank)))
+          .setMinPixelSize(0)
+          .setSortKey(rank)
+          .setAttr("rk", rank)
+          .setAttr("sh", network + "=" + ref)
+          .setPixelToleranceBelowZoom(maxZoom, 1.0);
+      }
+      return;
+    }
+
     int minZoom = minZoom(base, link, rank);
     if (minZoom > 14) {
       return;
@@ -180,6 +200,16 @@ public class HighwaySpeedProfile implements Profile {
   }
 
   /** Shields appear later for lesser routes; freeways and trunk roads (toll roads, parkways, ...) always by zoom 8. */
+  /** First zoom at which a route of this rank can carry a shield (see the tiers in docs/app.js). */
+  private static int routeMinZoom(int rank) {
+    return switch (rank) {
+      case 4 -> 3;
+      case 3 -> 5;
+      case 2 -> 7;
+      default -> 11;
+    };
+  }
+
   private static int shieldMinZoom(int rank, String base) {
     int zoom = switch (rank) {
       case 4 -> 6;
@@ -282,8 +312,9 @@ public class HighwaySpeedProfile implements Profile {
     Path out = Path.of(arguments.getString("output", "output .pmtiles file", "data/us-highways.pmtiles"));
     boolean minor = arguments.getBoolean("minor", "include unclassified/residential streets (z11+)", true);
     int maxZoom = arguments.getInteger("maxzoom", "deepest zoom level to generate tiles for", 14);
+    boolean routesOnly = arguments.getBoolean("routes_only", "build only the route-shield placement layer", false);
     Planetiler.create(arguments)
-      .setProfile(new HighwaySpeedProfile(minor, maxZoom))
+      .setProfile(new HighwaySpeedProfile(minor, maxZoom, routesOnly))
       .addOsmSource("osm", osm, "geofabrik:us")
       .overwriteOutput(out)
       .run();
