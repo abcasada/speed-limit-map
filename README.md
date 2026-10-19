@@ -7,6 +7,9 @@ A zoomable map of every US road down to residential streets, coloured by posted 
 - **Width** = number of lanes (OSM `lanes` tag). Roads without the tag fall back to a typical lane count for their class.
 - **Signs** = route shields: Interstate, US route and each state's own state-route shield (plus county routes, toll roads,
   business loops, ...), drawn by the [Americana shield renderer](https://github.com/osm-americana/openstreetmap-americana/tree/main/shieldlib).
+- **Basemaps** (selector in the panel): Light (default), Streets and Dark, the full OpenStreetMap-based vector styles from
+  [OpenFreeMap](https://openfreemap.org), fetched at runtime. If they cannot be reached the page shows a banner and falls
+  back to a plain background. White (under 55 mph) roads get a dark outline so they stay visible on the light maps.
 - Tap/click a road for its speed, lanes, route and type.
 
 It is a static site (`docs/`) plus PMTiles files. No server code.

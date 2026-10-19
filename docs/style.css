@@ -82,6 +82,12 @@ html, body {
   font: inherit;
 }
 
+#panel .row select {
+  width: auto;
+  flex: 1;
+  margin-top: 0;
+}
+
 #panel .note {
   margin: 4px 0 6px;
   color: var(--muted);
