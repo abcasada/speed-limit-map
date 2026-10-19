@@ -75,6 +75,22 @@ function rememberTheme(name) {
 }
 let themeName = [params.get('map'), storedTheme(), 'light'].find((t) => BASEMAPS[t]);
 
+// ---- modes and layer visibility ------------------------------------------------------------------------------------
+
+// "speed": roads coloured by posted limit. "fix": roads that may need fixing in OpenStreetMap (rules in qa-rules.js).
+let mode = params.get('mode') === 'fix' ? 'fix' : 'speed';
+// panel state survives basemap and mode switches
+const toggles = { unknown: true, shields: true };
+const qaEnabled = new Set(QA_RULES.map((rule) => rule.id));
+
+/** Whether a kind of road layer should currently be shown. */
+const kindVisible = (kind) => {
+  const fix = mode === 'fix';
+  return { casing: !fix, known: !fix, unknown: !fix && toggles.unknown, qaContext: fix, shields: toggles.shields }[kind];
+};
+const ruleVisible = (rule) => mode === 'fix' && qaEnabled.has(rule.id);
+const visibility = (visible) => (visible ? 'visible' : 'none');
+
 // ---- road layers ---------------------------------------------------------------------------------------------------
 
 const roadAttribution = '<a href="https://www.openstreetmap.org/copyright" target="_blank">&copy; OpenStreetMap contributors</a>';
@@ -102,25 +118,28 @@ const SHIELD_TIERS = [
 // higher route rank draws above lower.
 function buildRoadLayers(theme) {
   const base = (source) => ({ source, 'source-layer': 'highways' });
-  const line = () => ({ 'line-cap': 'round', 'line-join': 'round', 'line-sort-key': ['get', 'rk'] });
+  const line = (kind) => ({
+    'line-cap': 'round', 'line-join': 'round', 'line-sort-key': ['get', 'rk'],
+    ...(kind && { visibility: visibility(kindVisible(kind)) }),
+  });
   const layers = { unknown: [], casing: [], known: [], qaContext: [], qa: [], shields: [] };
   for (const source of Object.keys(roadSources)) {
     layers.unknown.push({
       id: `roads-unknown-${source}`, type: 'line', ...base(source),
       filter: ['!', ['has', 'speed']],
-      layout: line(),
+      layout: line('unknown'),
       paint: { 'line-color': theme.unknown, 'line-opacity': theme.unknownOpacity, 'line-width': laneWidth() },
     });
     layers.casing.push({
       id: `roads-casing-${source}`, type: 'line', ...base(source), minzoom: theme.casingMinZoom,
       filter: ['has', 'speed'],
-      layout: line(),
+      layout: line('casing'),
       paint: { 'line-color': theme.casing, 'line-opacity': theme.casingOpacity, 'line-width': laneWidth(theme.casingExtra) },
     });
     layers.known.push({
       id: `roads-known-${source}`, type: 'line', ...base(source),
       filter: ['has', 'speed'],
-      layout: line(),
+      layout: line('known'),
       paint: { 'line-color': speedColor, 'line-width': laneWidth() },
     });
   }
@@ -128,14 +147,14 @@ function buildRoadLayers(theme) {
   for (const source of Object.keys(roadSources)) {
     layers.qaContext.push({
       id: `qa-context-${source}`, type: 'line', ...base(source),
-      layout: line(),
+      layout: line('qaContext'),
       paint: { 'line-color': theme.unknown, 'line-opacity': 0.5, 'line-width': laneWidth() },
     });
     for (const rule of QA_RULES) {
       layers.qa.push({
         id: `qa-${rule.id}-${source}`, type: 'line', ...base(source), minzoom: rule.minzoom ?? 0,
         filter: rule.filter,
-        layout: line(),
+        layout: { ...line(), visibility: visibility(ruleVisible(rule)) },
         paint: { 'line-color': rule.color, 'line-width': laneWidth(rule.extraWidth ?? 0.8) },
       });
     }
@@ -146,6 +165,7 @@ function buildRoadLayers(theme) {
         id: `shields-${rk}-${source}`, type: 'symbol', source, 'source-layer': shieldSourceLayer, minzoom,
         filter: ['all', ['has', 'sh'], ['==', ['get', 'rk'], rk]],
         layout: {
+          visibility: visibility(kindVisible('shields')),
           'symbol-placement': 'line',
           'symbol-spacing': ['interpolate', ['linear'], ['zoom'], 2, 200, 6, 280, 12, 380],
           'icon-image': ['image', ['concat', 'shield|', ['get', 'sh']]],
@@ -284,27 +304,14 @@ map.addControl(new maplibregl.ScaleControl({ unit: 'imperial' }), 'bottom-right'
 map.touchZoomRotate.disableRotation();
 map.dragRotate.disable();
 
-// ---- modes and layer visibility ------------------------------------------------------------------------------------
-
-// "speed": roads coloured by posted limit. "fix": roads that may need fixing in OpenStreetMap (rules in qa-rules.js).
-let mode = params.get('mode') === 'fix' ? 'fix' : 'speed';
-// panel state survives basemap and mode switches
-const toggles = { unknown: true, shields: true };
-const qaEnabled = new Set(QA_RULES.map((rule) => rule.id));
-
 const setVisible = (ids, visible) => {
   for (const id of ids) {
-    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', visible ? 'visible' : 'none');
+    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', visibility(visible));
   }
 };
 function applyVisibility() {
-  const fix = mode === 'fix';
-  setVisible(layerIds('casing'), !fix);
-  setVisible(layerIds('known'), !fix);
-  setVisible(layerIds('unknown'), !fix && toggles.unknown);
-  setVisible(layerIds('qaContext'), fix);
-  for (const rule of QA_RULES) setVisible(ruleLayerIds(rule), fix && qaEnabled.has(rule.id));
-  setVisible(layerIds('shields'), toggles.shields);
+  for (const kind of ['casing', 'known', 'unknown', 'qaContext', 'shields']) setVisible(layerIds(kind), kindVisible(kind));
+  for (const rule of QA_RULES) setVisible(ruleLayerIds(rule), ruleVisible(rule));
 }
 map.on('style.load', () => {
   addSpriteImages(map);
