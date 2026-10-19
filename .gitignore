@@ -1,5 +1,5 @@
 # build inputs / outputs (large)
-build/
-data/
+/build/
+/data/
 node_modules/
 *.osm.pbf
