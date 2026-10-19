@@ -4,7 +4,10 @@ import { URLShieldRenderer } from './vendor/maplibre-shield-generator.js';
 
 const params = new URLSearchParams(location.search);
 const config = await fetch('config.json').then((r) => r.json()).catch(() => ({}));
-const tilesUrl = new URL(params.get('tiles') || config.tiles || 'data/us-highways.pmtiles', location.href).href;
+// `tiles` is one PMTiles file or a list of them (the national tileset is split into regional files to stay under
+// GitHub's 100 MB file limit). ?tiles=a.pmtiles,b.pmtiles overrides the config.
+const tileSpec = params.get('tiles')?.split(',') ?? config.tiles ?? 'data/us-highways.pmtiles';
+const tilesUrls = [tileSpec].flat().map((t) => new URL(t.trim(), location.href).href);
 
 // One colour per 5 mph step from 55 to 85; anything below 55 is white. Roads without a usable maxspeed are dim grey.
 const SPEED_COLORS = [
@@ -17,7 +20,7 @@ const SPEED_COLORS = [
   [85, '#e040fb'],
 ];
 const BELOW_COLOR = '#ffffff';
-const UNKNOWN_COLOR = '#46505d';
+const UNKNOWN_COLOR = '#5f6b7a';
 
 const speedColor = ['step', ['to-number', ['get', 'speed']], BELOW_COLOR, ...SPEED_COLORS.flat()];
 
@@ -30,7 +33,7 @@ const laneCount = [
     ['match', ['get', 'hw'], ['unclassified'], 1.5, ['residential', 'living_street'], 1, 2],
   ],
 ];
-const PER_LANE_PX = [[3, 0.3], [6, 0.5], [10, 0.9], [14, 1.8], [18, 4.2], [20, 8]];
+const PER_LANE_PX = [[3, 0.4], [6, 0.65], [10, 1.0], [14, 1.8], [18, 4.2], [20, 8]];
 const laneWidth = (extra = 0) => [
   'interpolate', ['linear'], ['zoom'],
   ...PER_LANE_PX.flatMap(([z, px]) => [z, ['+', ['*', laneCount, px], extra]]),
@@ -43,13 +46,57 @@ const FONT_BOLD = ['Noto Sans Bold'];
 const placeName = ['coalesce', ['get', 'name:en'], ['get', 'name']];
 const labelPaint = { 'text-color': '#9aa7b5', 'text-halo-color': '#0b0f14', 'text-halo-width': 1.4 };
 
+const roadAttribution = '<a href="https://www.openstreetmap.org/copyright" target="_blank">&copy; OpenStreetMap contributors</a>';
+const roadSources = Object.fromEntries(
+  tilesUrls.map((url, i) => [`roads${i}`, { type: 'vector', url: `pmtiles://${url}`, attribution: roadAttribution }]),
+);
+
+// Layers are created per tile file. Within each kind the order is: no-data roads first so roads with a known limit
+// draw on top; higher route rank draws above lower.
+const roadLayerBase = (source) => ({ source, 'source-layer': 'highways' });
+const roadLine = { 'line-cap': 'round', 'line-join': 'round', 'line-sort-key': ['get', 'rk'] };
+const roadLayers = { unknown: [], casing: [], known: [], shields: [] };
+for (const source of Object.keys(roadSources)) {
+  roadLayers.unknown.push({
+    id: `roads-unknown-${source}`, type: 'line', ...roadLayerBase(source),
+    filter: ['!', ['has', 'speed']],
+    layout: { ...roadLine },
+    paint: { 'line-color': UNKNOWN_COLOR, 'line-width': laneWidth() },
+  });
+  roadLayers.casing.push({
+    id: `roads-casing-${source}`, type: 'line', ...roadLayerBase(source), minzoom: 8,
+    filter: ['has', 'speed'],
+    layout: { ...roadLine },
+    paint: { 'line-color': '#05080b', 'line-opacity': 0.7, 'line-width': laneWidth(1.2) },
+  });
+  roadLayers.known.push({
+    id: `roads-known-${source}`, type: 'line', ...roadLayerBase(source),
+    filter: ['has', 'speed'],
+    layout: { ...roadLine },
+    paint: { 'line-color': speedColor, 'line-width': laneWidth() },
+  });
+  roadLayers.shields.push({
+    id: `shields-${source}`, type: 'symbol', ...roadLayerBase(source), minzoom: 6,
+    filter: ['has', 'sh'],
+    layout: {
+      'symbol-placement': 'line',
+      'symbol-spacing': 420,
+      'icon-image': ['image', ['concat', 'shield|', ['get', 'sh']]],
+      'icon-rotation-alignment': 'viewport',
+      'icon-size': ['interpolate', ['linear'], ['zoom'], 6, 0.5, 10, 0.65, 14, 0.85, 18, 1],
+      'symbol-sort-key': ['-', 5, ['get', 'rk']],
+    },
+  });
+}
+const layerIds = (kind) => roadLayers[kind].map((l) => l.id);
+
 const style = {
   version: 8,
   glyphs: 'https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf',
   sprite: new URL('shields/sprite', location.href).href,
   sources: {
     base: { type: 'vector', url: 'https://tiles.openfreemap.org/planet', attribution: '<a href="https://openfreemap.org" target="_blank">OpenFreeMap</a> <a href="https://www.openmaptiles.org/" target="_blank">&copy; OpenMapTiles</a>' },
-    roads: { type: 'vector', url: `pmtiles://${tilesUrl}`, attribution: '<a href="https://www.openstreetmap.org/copyright" target="_blank">&copy; OpenStreetMap contributors</a>' },
+    ...roadSources,
   },
   layers: [
     { id: 'background', type: 'background', paint: { 'background-color': '#0b0f14' } },
@@ -68,25 +115,9 @@ const style = {
       paint: { 'line-color': '#7b8797', 'line-width': 1.2 },
     },
 
-    // roads: no-data first so that roads with a known limit draw on top; higher route rank draws above lower
-    {
-      id: 'roads-unknown', type: 'line', source: 'roads', 'source-layer': 'highways',
-      filter: ['!', ['has', 'speed']],
-      layout: { 'line-cap': 'round', 'line-join': 'round', 'line-sort-key': ['get', 'rk'] },
-      paint: { 'line-color': UNKNOWN_COLOR, 'line-width': laneWidth() },
-    },
-    {
-      id: 'roads-casing', type: 'line', source: 'roads', 'source-layer': 'highways', minzoom: 8,
-      filter: ['has', 'speed'],
-      layout: { 'line-cap': 'round', 'line-join': 'round', 'line-sort-key': ['get', 'rk'] },
-      paint: { 'line-color': '#05080b', 'line-opacity': 0.7, 'line-width': laneWidth(1.2) },
-    },
-    {
-      id: 'roads-known', type: 'line', source: 'roads', 'source-layer': 'highways',
-      filter: ['has', 'speed'],
-      layout: { 'line-cap': 'round', 'line-join': 'round', 'line-sort-key': ['get', 'rk'] },
-      paint: { 'line-color': speedColor, 'line-width': laneWidth() },
-    },
+    ...roadLayers.unknown,
+    ...roadLayers.casing,
+    ...roadLayers.known,
 
     {
       id: 'road-names', type: 'symbol', source: 'base', 'source-layer': 'transportation_name', minzoom: 14,
@@ -96,18 +127,7 @@ const style = {
       },
       paint: { ...labelPaint, 'text-color': '#c4ccd6', 'text-halo-width': 1.8 },
     },
-    {
-      id: 'shields', type: 'symbol', source: 'roads', 'source-layer': 'highways', minzoom: 6,
-      filter: ['has', 'sh'],
-      layout: {
-        'symbol-placement': 'line',
-        'symbol-spacing': 420,
-        'icon-image': ['image', ['concat', 'shield|', ['get', 'sh']]],
-        'icon-rotation-alignment': 'viewport',
-        'icon-size': ['interpolate', ['linear'], ['zoom'], 6, 0.5, 10, 0.65, 14, 0.85, 18, 1],
-        'symbol-sort-key': ['-', 5, ['get', 'rk']],
-      },
-    },
+    ...roadLayers.shields,
 
     {
       id: 'place-state', type: 'symbol', source: 'base', 'source-layer': 'place', minzoom: 3, maxzoom: 7,
@@ -136,22 +156,30 @@ const style = {
 
 const protocol = new pmtiles.Protocol();
 maplibregl.addProtocol('pmtiles', protocol.tile);
-const archive = new pmtiles.PMTiles(tilesUrl);
-protocol.add(archive);
+const archives = tilesUrls.map((url) => {
+  const archive = new pmtiles.PMTiles(url);
+  protocol.add(archive);
+  return archive;
+});
 
 const statusEl = document.getElementById('status');
 const showStatus = (msg) => { statusEl.textContent = msg; statusEl.hidden = false; };
 
-const header = await archive.getHeader().catch((e) => {
-  showStatus(`Could not open the road tiles (${tilesUrl}). ${e.message || e}`);
+const headers = await Promise.all(archives.map((archive, i) => archive.getHeader().catch((e) => {
+  showStatus(`Could not open the road tiles (${tilesUrls[i]}). ${e.message || e}`);
   return null;
-});
+})));
+const bounds = headers.filter(Boolean).reduce((b, h) => ({
+  minLon: Math.min(b.minLon, h.minLon), maxLon: Math.max(b.maxLon, h.maxLon),
+  minLat: Math.min(b.minLat, h.minLat), maxLat: Math.max(b.maxLat, h.maxLat),
+}), { minLon: 180, maxLon: -180, minLat: 90, maxLat: -90 });
+const hasBounds = bounds.minLon <= bounds.maxLon;
 
 const view = config.view || {};
 const map = new maplibregl.Map({
   container: 'map',
   style,
-  center: view.center || (header ? [(header.minLon + header.maxLon) / 2, (header.minLat + header.maxLat) / 2] : [-98.5, 39.5]),
+  center: view.center || (hasBounds ? [(bounds.minLon + bounds.maxLon) / 2, (bounds.minLat + bounds.maxLat) / 2] : [-98.5, 39.5]),
   zoom: view.zoom ?? 4,
   minZoom: 2,
   maxZoom: 20,
@@ -179,7 +207,7 @@ new URLShieldRenderer(new URL('shields/shields.json', location.href).href, shiel
 
 map.on('error', (e) => {
   const url = e?.source?.url || e?.error?.url || '';
-  if (String(url).includes('.pmtiles') || e?.sourceId === 'roads') {
+  if (String(url).includes('.pmtiles') || e?.sourceId?.startsWith('roads')) {
     showStatus('Problem loading road tiles: ' + (e.error?.message || 'unknown error'));
   }
   console.warn(e.error || e);
@@ -205,7 +233,7 @@ function describe(props) {
 map.on('click', (e) => {
   const pad = 8;
   const hits = map.queryRenderedFeatures([[e.point.x - pad, e.point.y - pad], [e.point.x + pad, e.point.y + pad]], {
-    layers: ['roads-known', 'roads-unknown'],
+    layers: [...layerIds('known'), ...layerIds('unknown')],
   });
   if (!hits.length) return;
   const props = hits[0].properties;
@@ -225,7 +253,7 @@ map.on('click', (e) => {
   new maplibregl.Popup({ maxWidth: '260px' }).setLngLat(e.lngLat).setDOMContent(box).addTo(map);
 });
 map.on('mousemove', (e) => {
-  const hit = map.queryRenderedFeatures([[e.point.x - 4, e.point.y - 4], [e.point.x + 4, e.point.y + 4]], { layers: ['roads-known', 'roads-unknown'] });
+  const hit = map.queryRenderedFeatures([[e.point.x - 4, e.point.y - 4], [e.point.x + 4, e.point.y + 4]], { layers: [...layerIds('known'), ...layerIds('unknown')] });
   map.getCanvas().style.cursor = hit.length ? 'pointer' : '';
 });
 
@@ -252,8 +280,8 @@ if (matchMedia('(max-width: 600px)').matches) panel.open = false;
 const setVisible = (ids, visible) => {
   for (const id of ids) map.setLayoutProperty(id, 'visibility', visible ? 'visible' : 'none');
 };
-document.getElementById('toggle-unknown').addEventListener('change', (e) => setVisible(['roads-unknown'], e.target.checked));
-document.getElementById('toggle-shields').addEventListener('change', (e) => setVisible(['shields'], e.target.checked));
+document.getElementById('toggle-unknown').addEventListener('change', (e) => setVisible(layerIds('unknown'), e.target.checked));
+document.getElementById('toggle-shields').addEventListener('change', (e) => setVisible(layerIds('shields'), e.target.checked));
 
 const picker = document.getElementById('bookmarks');
 if (config.bookmarks?.length) {

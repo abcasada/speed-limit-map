@@ -45,9 +45,11 @@ public class HighwaySpeedProfile implements Profile {
     "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY");
 
   private final boolean includeMinor;
+  private final int maxZoom;
 
-  HighwaySpeedProfile(boolean includeMinor) {
+  HighwaySpeedProfile(boolean includeMinor, int maxZoom) {
     this.includeMinor = includeMinor;
+    this.maxZoom = maxZoom;
   }
 
   @Override
@@ -129,7 +131,10 @@ public class HighwaySpeedProfile implements Profile {
       .setSortKey(rank * 8 + hwRank)
       .setAttr("rk", rank)
       .setAttr("hw", base)
-      .setPixelTolerance(0.4);
+      // keep tiny segments: adjacent ways often differ in speed, and dropping the short ones leaves gaps in a route
+      .setMinPixelSize(0)
+      // simplify below the deepest zoom only, so overzooming past it still shows accurate geometry
+      .setPixelToleranceBelowZoom(maxZoom, 0.4);
     if (speed > 0) {
       line.setAttr("speed", speed);
     }
@@ -137,7 +142,7 @@ public class HighwaySpeedProfile implements Profile {
       line.setAttr("lanes", lanes);
     }
     if (network != null) {
-      line.setAttrWithMinzoom("sh", network + "=" + ref, shieldMinZoom(rank));
+      line.setAttrWithMinzoom("sh", network + "=" + ref, shieldMinZoom(rank, base));
     }
     addIfPresent(line, "ref", sf.getString("ref"), 10);
     addIfPresent(line, "name", sf.getString("name"), 12);
@@ -174,13 +179,15 @@ public class HighwaySpeedProfile implements Profile {
     };
   }
 
-  private static int shieldMinZoom(int rank) {
-    return switch (rank) {
+  /** Shields appear later for lesser routes; freeways and trunk roads (toll roads, parkways, ...) always by zoom 8. */
+  private static int shieldMinZoom(int rank, String base) {
+    int zoom = switch (rank) {
       case 4 -> 6;
       case 3 -> 8;
       case 2 -> 9;
       default -> 11;
     };
+    return base.equals("motorway") || base.equals("trunk") ? Math.min(zoom, 8) : zoom;
   }
 
   /**
@@ -274,8 +281,9 @@ public class HighwaySpeedProfile implements Profile {
     Path osm = Path.of(arguments.getString("osm_path", "OSM extract (.osm.pbf)", "data/sources/us-roads.osm.pbf"));
     Path out = Path.of(arguments.getString("output", "output .pmtiles file", "data/us-highways.pmtiles"));
     boolean minor = arguments.getBoolean("minor", "include unclassified/residential streets (z11+)", true);
+    int maxZoom = arguments.getInteger("maxzoom", "deepest zoom level to generate tiles for", 14);
     Planetiler.create(arguments)
-      .setProfile(new HighwaySpeedProfile(minor))
+      .setProfile(new HighwaySpeedProfile(minor, maxZoom))
       .addOsmSource("osm", osm, "geofabrik:us")
       .overwriteOutput(out)
       .run();
