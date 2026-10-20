@@ -55,7 +55,10 @@ each matching the zoom where those roads first appear), and collision detection 
 
 Highlights, on a faint copy of every road, the things worth investigating or fixing in OpenStreetMap. Tap a road to see
 which rules flag it and to open that spot on openstreetmap.org or in the iD editor. Each rule can be switched on and off in
-the legend. Current rules:
+the legend. Four **road type** checkboxes (Interstate, US routes, State routes, All other roads) hide a whole kind of
+road, including its highlights and route signs; "All other roads" is off by default so the view starts focused on the
+signed highway network. In this mode the basemap's own road lines and street names are hidden so a road type that is
+switched off is really gone. Current rules:
 
 | rule | flags |
 |---|---|

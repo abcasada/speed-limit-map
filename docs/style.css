@@ -223,3 +223,22 @@ html, body {
 }
 
 .maplibregl-popup-content a { color: #1a5fd0; }
+
+#fix-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 12px;
+  margin-top: 8px;
+}
+
+#fix-options h4 {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+#fix-options label { margin: 0; }

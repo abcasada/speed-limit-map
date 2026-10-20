@@ -89,10 +89,24 @@ const qaEnabled = new Set(QA_RULES.map((rule) => rule.id));
 /** Whether a kind of road layer should currently be shown. */
 const kindVisible = (kind) => {
   const fix = mode === 'fix';
-  return { casing: !fix, known: !fix, unknown: !fix && toggles.unknown, qaContext: fix, shields: toggles.shields }[kind];
+  return { casing: !fix, known: !fix, unknown: !fix && toggles.unknown, qaContext: fix }[kind];
 };
 const ruleVisible = (rule) => mode === 'fix' && qaEnabled.has(rule.id);
 const visibility = (visible) => (visible ? 'visible' : 'none');
+
+// Fix-it mode can show or hide whole kinds of road. Types map onto the signed-route rank in the tiles (`rk`):
+// 4 Interstate, 3 US route, 2 state route, 1 county/other signed route, 0 unsigned road.
+const FIX_TYPES = [
+  { id: 'interstate', label: 'Interstate', ranks: [4] },
+  { id: 'us', label: 'US routes', ranks: [3] },
+  { id: 'state', label: 'State routes', ranks: [2] },
+  { id: 'other', label: 'All other roads', ranks: [0, 1] },
+];
+const fixTypes = { interstate: true, us: true, state: true, other: false };
+const fixRanks = () => FIX_TYPES.filter((t) => fixTypes[t.id]).flatMap((t) => t.ranks);
+const fixTypeFilter = () => ['in', ['get', 'rk'], ['literal', fixRanks()]];
+/** Whether shields for a route rank are shown: always in speed mode, only for enabled road types in fix-it mode. */
+const shieldVisible = (rk) => toggles.shields && (mode !== 'fix' || fixRanks().includes(rk));
 
 // ---- road layers ---------------------------------------------------------------------------------------------------
 
@@ -150,13 +164,14 @@ function buildRoadLayers(theme) {
   for (const source of Object.keys(roadSources)) {
     layers.qaContext.push({
       id: `qa-context-${source}`, type: 'line', ...base(source),
+      filter: fixTypeFilter(),
       layout: line('qaContext'),
-      paint: { 'line-color': theme.unknown, 'line-opacity': 0.5, 'line-width': laneWidth() },
+      paint: { 'line-color': theme.unknown, 'line-opacity': 0.85, 'line-width': laneWidth() },
     });
     for (const rule of QA_RULES) {
       layers.qa.push({
         id: `qa-${rule.id}-${source}`, type: 'line', ...base(source), minzoom: rule.minzoom ?? 0,
-        filter: rule.filter,
+        filter: ['all', fixTypeFilter(), rule.filter],
         layout: { ...line(), visibility: visibility(ruleVisible(rule)) },
         paint: { 'line-color': rule.color, 'line-width': laneWidth(rule.extraWidth ?? 0.8) },
       });
@@ -168,7 +183,7 @@ function buildRoadLayers(theme) {
         id: `shields-${rk}-${source}`, type: 'symbol', source, 'source-layer': shieldSourceLayer, minzoom,
         filter: ['all', ['has', 'sh'], ['==', ['get', 'rk'], rk]],
         layout: {
-          visibility: visibility(kindVisible('shields')),
+          visibility: visibility(shieldVisible(rk)),
           'symbol-placement': 'line',
           'symbol-spacing': ['interpolate', ['linear'], ['zoom'], 2, 200, 6, 280, 12, 380],
           'icon-image': ['image', ['concat', 'shield|', ['get', 'sh']]],
@@ -183,6 +198,7 @@ function buildRoadLayers(theme) {
 }
 let roadLayers = buildRoadLayers(BASEMAPS[themeName]);
 const layerIds = (kind) => roadLayers[kind].map((l) => l.id);
+const shieldLayerIds = (rk) => Object.keys(shieldSources).map((source) => `shields-${rk}-${source}`);
 const ruleLayerIds = (rule) => Object.keys(roadSources).map((source) => `qa-${rule.id}-${source}`);
 
 const baseStyleCache = {};
@@ -221,6 +237,9 @@ const stateBoundaries = (theme) => ({
   },
 });
 
+/** Ids of the base style's own road layers (lines, labels, bridges, rail...); hidden in fix-it mode, see applyVisibility. */
+let baseRoadIds = [];
+
 function composeStyle(base, theme) {
   const style = structuredClone(base);
   style.sources = { ...style.sources, ...roadSources, ...routeSources };
@@ -235,6 +254,14 @@ function composeStyle(base, theme) {
         layer.filter = ['all', layer.filter, ['!=', ['get', 'admin_level'], 4]];
       }
     }
+  }
+  // In fix-it mode our own road layer is the only road drawing, so that switching a road type off really removes it
+  // (the base style cannot tell Interstates from other roads). Layers the style already hides stay hidden.
+  baseRoadIds = style.layers
+    .filter((l) => String(l['source-layer']).startsWith('transportation') && l.layout?.visibility !== 'none')
+    .map((l) => l.id);
+  for (const layer of style.layers) {
+    if (baseRoadIds.includes(layer.id)) layer.layout = { ...layer.layout, visibility: visibility(mode !== 'fix') };
   }
   roadLayers = buildRoadLayers(theme);
   // above every base fill/line (so base roads and landuse never cover ours); the base map's labels stay on top
@@ -310,6 +337,7 @@ async function styleFor(name) {
     const style = fallbackStyle();
     style.sources = { ...roadSources, ...routeSources };
     roadLayers = buildRoadLayers(BASEMAPS[name]);
+    baseRoadIds = [];
     style.layers.push(...roadLayers.unknown, ...roadLayers.casing, ...roadLayers.known, ...roadLayers.qaContext, ...roadLayers.qa, ...roadLayers.shields);
     return style;
   }
@@ -326,6 +354,7 @@ const map = new maplibregl.Map({
   hash: true,
   attributionControl: { compact: true },
 });
+if (params.has('debug')) window.__map = map; // for automated checks
 map.addControl(new maplibregl.NavigationControl({ visualizePitch: false }), 'top-right');
 map.addControl(new maplibregl.GeolocateControl({ positionOptions: { enableHighAccuracy: true }, trackUserLocation: true }), 'top-right');
 map.addControl(new maplibregl.ScaleControl({ unit: 'imperial' }), 'bottom-right');
@@ -338,8 +367,17 @@ const setVisible = (ids, visible) => {
   }
 };
 function applyVisibility() {
-  for (const kind of ['casing', 'known', 'unknown', 'qaContext', 'shields']) setVisible(layerIds(kind), kindVisible(kind));
+  setVisible(baseRoadIds, mode !== 'fix');
+  for (const kind of ['casing', 'known', 'unknown', 'qaContext']) setVisible(layerIds(kind), kindVisible(kind));
   for (const rule of QA_RULES) setVisible(ruleLayerIds(rule), ruleVisible(rule));
+  for (const { rk } of SHIELD_TIERS) setVisible(shieldLayerIds(rk), shieldVisible(rk));
+}
+/** Re-applies the road-type filter to the fix-it layers (their rules stay as they were). */
+function applyFixFilters() {
+  for (const id of layerIds('qaContext')) if (map.getLayer(id)) map.setFilter(id, fixTypeFilter());
+  for (const rule of QA_RULES) {
+    for (const id of ruleLayerIds(rule)) if (map.getLayer(id)) map.setFilter(id, ['all', fixTypeFilter(), rule.filter]);
+  }
 }
 map.on('style.load', () => {
   addSpriteImages(map);
@@ -462,6 +500,7 @@ map.on('mousemove', (e) => {
 const legend = document.getElementById('legend');
 const note = document.getElementById('note');
 const speedOptions = document.getElementById('speed-options');
+const fixOptions = document.getElementById('fix-options');
 const modeButtons = [...document.querySelectorAll('[data-mode]')];
 
 const NOTES = {
@@ -480,6 +519,7 @@ function swatch(color) {
 function renderLegend() {
   note.textContent = NOTES[mode];
   speedOptions.hidden = mode === 'fix';
+  fixOptions.hidden = mode !== 'fix';
   if (mode === 'fix') {
     const ul = document.createElement('ul');
     ul.className = 'rules';
@@ -519,6 +559,22 @@ function renderLegend() {
     chips.append(li);
   }
   legend.replaceChildren(gradient, chips);
+}
+
+// road-type checkboxes for fix-it mode
+fixOptions.append(element('h4', 'Road types'));
+for (const type of FIX_TYPES) {
+  const label = document.createElement('label');
+  const box = document.createElement('input');
+  box.type = 'checkbox';
+  box.checked = fixTypes[type.id];
+  box.addEventListener('change', () => {
+    fixTypes[type.id] = box.checked;
+    applyFixFilters();
+    applyVisibility();
+  });
+  label.append(box, document.createTextNode(type.label));
+  fixOptions.append(label);
 }
 
 function setMode(next) {
