@@ -24,6 +24,7 @@ tiles/HighwaySpeedProfile.java   Planetiler profile: OSM -> vector tiles with sp
 tiles/build.sh                   download extract -> filter roads -> build data/us-highways.pmtiles
 tiles/shard.sh                   split a tileset into <100 MB files for git / GitHub Pages
 docs/qa-rules.js                 the fix-it mode rules (add new rules here)
+tools/compare/                   official-data comparison: fetch_kdot.py, compare.py (writes docs/data/kdot-diff.geojson)
 docs/                            the web app (MapLibre GL JS + PMTiles) and the published tiles (docs/data/roads-*.pmtiles,
                                  docs/data/routes.pmtiles)
 server.mjs                       local dev server (supports HTTP Range requests, which PMTiles needs)
@@ -81,6 +82,46 @@ Ideas that need more data in the tiles first (ramps, adjacent-segment comparison
 
 Limits of the current rules: tiles store ramps under their parent class, so a freeway-speed check cannot tell a slow
 ramp from a slow freeway (hence the low threshold), and the raw `maxspeed` text is only in the tiles from zoom 10.
+
+## Compare mode: official data vs OpenStreetMap
+
+A third mode (**Compare**) shows where an official speed-limit dataset disagrees with OSM. It currently covers **Kansas**,
+using the Kansas DOT *Speed Limits* layer (3,605 segments, about 12,200 miles of state highway). Two kinds of finding:
+
+- **OSM has a different speed** (red): matched OSM roads carry a different `maxspeed` than the official record.
+- **OSM has no speed** (cyan): the official dataset has a limit and the matched OSM roads have none.
+
+A slider sets the shortest stretch worth showing (0.1 to 20 miles, default **1 mile**), so you can start with the long,
+obvious problems and work down. The counts next to each category and the summary line follow the slider. Tapping a
+stretch shows both limits, its length, and links to the OSM ways involved and to the iD editor.
+
+On the Kansas data at the 1-mile default that is 68 "different" stretches (284 miles) and 592 "no speed" stretches
+(4,160 miles). At 0.1 mile it is 300 and 1,002 within the map view of central Kansas, 482 and 1,481 statewide.
+
+**How it works** (`tools/compare/compare.py`): it walks along every official segment taking a sample every 50 m, finds the
+OSM roads alongside each sample (within 35 m, heading within 30 degrees, same road class as the best match so a frontage
+road does not count; both carriageways of a divided highway are matched), and compares speeds with the same parsing rules
+the map uses. Consecutive disagreeing samples become one stretch whose length is stored, which is what the slider filters
+on. Samples with no OSM road alongside are not counted as errors, and a gap of up to 150 m of them does not split a stretch.
+It writes `docs/data/kdot-diff.geojson` (1.9 MB), which the app loads only when you open Compare.
+
+```sh
+python3 tools/compare/fetch_kdot.py kdot.geojson                       # download the official layer
+osmium extract -b -102.3,36.8,-94.4,40.2 --strategy=complete_ways us-roads.osm.pbf -o ks.osm.pbf
+osmium export ks.osm.pbf -f geojsonseq --geometry-types=linestring --add-unique-id=type_id -o ks.geojsonseq
+python3 tools/compare/compare.py --official kdot.geojson --osm ks.geojsonseq --out docs/data/kdot-diff.geojson
+```
+
+Adding another state means producing another file the same way (`--source`, and `--route-field`, `--from-field`,
+`--to-field`, `--speed-field` if its columns are named differently) and listing it under `official` in `docs/config.json`.
+
+**Read the results as leads, not verdicts.** Either side can be wrong: the official data is a record of resolutions and
+inventory, and posted limits change. Verify against signs, imagery or street-level photos before editing OSM. The KDOT layer
+carries no open-data licence (only a no-warranty notice), so do not copy its values into OSM; use it to decide where to
+look. That is also why only the derived disagreements are kept in this repository, not the raw download.
+
+Limits: truck and night limits are ignored; ramps and frontage roads are not compared; sections where OSM geometry is
+missing or offset more than 35 m from the official line are skipped rather than flagged.
 
 ## Rebuild the tiles
 

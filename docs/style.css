@@ -242,3 +242,47 @@ html, body {
 }
 
 #fix-options label { margin: 0; }
+
+#compare-options { margin-top: 8px; }
+
+.slider-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+  font-size: 13px;
+}
+
+#compare-options input[type="range"] {
+  width: 100%;
+  height: 28px;
+  margin: 0;
+  accent-color: #2f6df6;
+}
+
+#compare-options .summary {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+#legend .count {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.maplibregl-popup-content .links.wrap { flex-wrap: wrap; gap: 4px 12px; }
+
+.maplibregl-popup-content .caution {
+  margin: 10px 0 0;
+  color: #666;
+  font-size: 12px;
+}
+
+/* a display rule on these blocks would otherwise override the [hidden] attribute */
+#fix-options[hidden], #compare-options[hidden], #speed-options[hidden] { display: none; }
+
+/* popups sit above the control panel instead of tucking under it */
+.maplibregl-popup { z-index: 3; }

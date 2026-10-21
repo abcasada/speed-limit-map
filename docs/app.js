@@ -14,6 +14,9 @@ const tilesUrls = [tileSpec].flat().map((t) => new URL(t.trim(), location.href).
 const routeSpec = params.get('routes')?.split(',') ?? config.routes ?? [];
 const routesUrls = [routeSpec].flat().filter(Boolean).map((t) => new URL(t.trim(), location.href).href);
 
+// Official data to compare with (config.json "official"): [{ id, name, url }], each a file made by tools/compare.
+const officialSources = config.official ?? [];
+
 // Speed colours: white below 55 mph, then a continuous gradient from bright green at 55 through bright yellow at 70 to
 // bright red at 85 (so a 62 mph limit is a yellowish green and an 80 is an orange-red), pink above 85. Roads without a
 // usable maxspeed use the basemap's "no data" grey (see BASEMAPS).
@@ -81,15 +84,16 @@ let themeName = [params.get('map'), storedTheme(), 'light'].find((t) => BASEMAPS
 // ---- modes and layer visibility ------------------------------------------------------------------------------------
 
 // "speed": roads coloured by posted limit. "fix": roads that may need fixing in OpenStreetMap (rules in qa-rules.js).
-let mode = params.get('mode') === 'fix' ? 'fix' : 'speed';
+// "compare": stretches where an official speed-limit dataset disagrees with OpenStreetMap (see the compare section below).
+let mode = ['fix', 'compare'].find((m) => m === params.get('mode') && (m !== 'compare' || officialSources.length)) ?? 'speed';
 // panel state survives basemap and mode switches
 const toggles = { unknown: true, shields: true };
 const qaEnabled = new Set(QA_RULES.map((rule) => rule.id));
 
 /** Whether a kind of road layer should currently be shown. */
 const kindVisible = (kind) => {
-  const fix = mode === 'fix';
-  return { casing: !fix, known: !fix, unknown: !fix && toggles.unknown, qaContext: fix }[kind];
+  const speed = mode === 'speed';
+  return { casing: speed, known: speed, unknown: speed && toggles.unknown, qaContext: mode === 'fix' }[kind];
 };
 const ruleVisible = (rule) => mode === 'fix' && qaEnabled.has(rule.id);
 const visibility = (visible) => (visible ? 'visible' : 'none');
@@ -371,7 +375,101 @@ function applyVisibility() {
   for (const kind of ['casing', 'known', 'unknown', 'qaContext']) setVisible(layerIds(kind), kindVisible(kind));
   for (const rule of QA_RULES) setVisible(ruleLayerIds(rule), ruleVisible(rule));
   for (const { rk } of SHIELD_TIERS) setVisible(shieldLayerIds(rk), shieldVisible(rk));
+  officialSources.forEach((_, i) => {
+    for (const { id } of COMPARE_KINDS) {
+      setVisible([`compare-casing-${id}-${i}`, `compare-line-${id}-${i}`], mode === 'compare' && compare.kinds[id]);
+    }
+  });
 }
+// ---- compare mode: official data vs OpenStreetMap --------------------------------------------------------------------
+
+// Each official source is a GeoJSON file of stretches where its speed limit disagrees with OSM, written by
+// tools/compare/compare.py: properties kind ("differs" | "missing"), miles (length of the stretch), official, osm, ways, ...
+const COMPARE_KINDS = [
+  { id: 'differs', label: 'OSM has a different speed', color: '#ff1744' },
+  { id: 'missing', label: 'OSM has no speed', color: '#00b8d4' },
+];
+const MIN_MILES = [0.1, 0.25, 0.5, 1, 2, 3, 5, 10, 20];
+const nearestStep = (miles) => MIN_MILES.reduce((best, m, i) => (Math.abs(m - miles) < Math.abs(MIN_MILES[best] - miles) ? i : best), 0);
+const compare = {
+  minIdx: nearestStep(Number(params.get('min')) || 1), // 1 mile unless ?min= says otherwise
+  kinds: { differs: true, missing: true },
+  data: officialSources.map(() => null), // loaded FeatureCollections
+};
+const compareMiles = () => MIN_MILES[compare.minIdx];
+const compareIds = (what) => officialSources.flatMap((_, i) => COMPARE_KINDS.map((k) => `compare-${what}-${k.id}-${i}`));
+const compareFilter = (kind) => ['all', ['==', ['get', 'kind'], kind], ['>=', ['get', 'miles'], compareMiles()]];
+
+const officialData = officialSources.map(() => null);
+const loadOfficial = (i) => (officialData[i] ??= fetch(officialSources[i].url).then((r) => {
+  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+  return r.json();
+}).then((data) => (compare.data[i] = data)));
+
+/** Adds the compare sources and layers (idempotent; a style reload drops them, so this runs again after style.load). */
+async function ensureCompareLayers() {
+  if (mode !== 'compare') return;
+  try {
+    await Promise.all(officialSources.map((_, i) => loadOfficial(i)));
+  } catch (e) {
+    showStatus(`Could not load the official speed data (${e.message || e}).`);
+    return;
+  }
+  if (mode !== 'compare') return;
+  const before = roadLayers.shields.find((l) => map.getLayer(l.id))?.id; // keep route signs above the stretches
+  officialSources.forEach((source, i) => {
+    if (!map.getSource(`official${i}`)) {
+      map.addSource(`official${i}`, {
+        type: 'geojson', data: compare.data[i],
+        attribution: `Speed limits: ${source.name}`,
+      });
+    }
+    for (const { id, color } of COMPARE_KINDS) {
+      const width = ['interpolate', ['linear'], ['zoom'], 3, 1.6, 7, 3, 11, 5, 15, 8, 19, 12];
+      const common = { type: 'line', source: `official${i}`, layout: { 'line-cap': 'round', 'line-join': 'round' } };
+      if (!map.getLayer(`compare-casing-${id}-${i}`)) {
+        map.addLayer({ ...common, id: `compare-casing-${id}-${i}`, filter: compareFilter(id),
+          layout: { ...common.layout, visibility: visibility(compare.kinds[id]) },
+          paint: { 'line-color': '#0b0f14', 'line-opacity': 0.75, 'line-width': ['+', width, 2.5] } }, before);
+      }
+      if (!map.getLayer(`compare-line-${id}-${i}`)) {
+        map.addLayer({ ...common, id: `compare-line-${id}-${i}`, filter: compareFilter(id),
+          layout: { ...common.layout, visibility: visibility(compare.kinds[id]) },
+          paint: { 'line-color': color, 'line-width': width } }, before);
+      }
+    }
+  });
+  applyVisibility();
+  renderCompareSummary();
+  fitToOfficialData();
+}
+
+/** The official data covers only some states: if the current view has none of it, move to where it is. */
+let fitted = false;
+function fitToOfficialData() {
+  if (fitted) return;
+  const box = new maplibregl.LngLatBounds();
+  const add = (c) => (typeof c[0] === 'number' ? box.extend(c) : c.forEach(add));
+  for (const data of compare.data) for (const f of data?.features ?? []) add(f.geometry.coordinates);
+  if (box.isEmpty()) return;
+  const view = map.getBounds();
+  const overlaps = view.getWest() < box.getEast() && view.getEast() > box.getWest()
+    && view.getSouth() < box.getNorth() && view.getNorth() > box.getSouth();
+  fitted = true;
+  if (!overlaps) map.fitBounds(box, { padding: 40, duration: 800 });
+}
+function applyCompareFilters() {
+  officialSources.forEach((_, i) => {
+    for (const { id } of COMPARE_KINDS) {
+      for (const what of ['casing', 'line']) {
+        const layer = `compare-${what}-${id}-${i}`;
+        if (map.getLayer(layer)) map.setFilter(layer, compareFilter(id));
+      }
+    }
+  });
+  renderCompareSummary();
+}
+
 /** Re-applies the road-type filter to the fix-it layers (their rules stay as they were). */
 function applyFixFilters() {
   for (const id of layerIds('qaContext')) if (map.getLayer(id)) map.setFilter(id, fixTypeFilter());
@@ -382,6 +480,7 @@ function applyFixFilters() {
 map.on('style.load', () => {
   addSpriteImages(map);
   applyVisibility();
+  ensureCompareLayers();
 });
 
 const shieldParser = {
@@ -427,8 +526,10 @@ function describe(props) {
 }
 
 // all road layers that can be tapped; layers that are hidden in the current mode simply return nothing
-const hitLayers = () => [...layerIds('qa'), ...layerIds('qaContext'), ...layerIds('known'), ...layerIds('unknown')]
-  .filter((id) => map.getLayer(id));
+const hitLayers = () => (mode === 'compare'
+  ? compareIds('line')
+  : [...layerIds('qa'), ...layerIds('qaContext'), ...layerIds('known'), ...layerIds('unknown')]
+).filter((id) => map.getLayer(id));
 
 const sameProps = (a, b) => {
   const keys = Object.keys(a);
@@ -450,12 +551,54 @@ function element(tag, text, className) {
   return el;
 }
 
+function link(text, url) {
+  const a = element('a', text);
+  a.href = url;
+  a.target = '_blank';
+  a.rel = 'noopener';
+  return a;
+}
+
+function comparePopup(props) {
+  const source = officialSources.find((s) => s.id === props.src);
+  const content = document.createElement('div');
+  content.append(element('h3', props.name || props.ref || 'Road'));
+  const rows = [
+    [`${source?.name ?? props.src} limit`, `${props.official} mph`],
+    ['OpenStreetMap', props.kind === 'differs' ? `${props.osm.split(',').join(' / ')} mph` : 'no maxspeed tag'],
+    ['Stretch length', `${Number(props.miles).toFixed(2)} miles`],
+  ];
+  if (props.ref) rows.push(['OSM ref', props.ref]);
+  const list = document.createElement('dl');
+  for (const [k, v] of rows) list.append(element('dt', k), element('dd', v));
+  content.append(list);
+
+  const ways = String(props.ways || '').split(',').filter(Boolean);
+  if (ways.length) {
+    content.append(element('h4', 'OSM ways on this stretch'));
+    const links = element('p', '', 'links wrap');
+    for (const id of ways) links.append(link(`way ${id}`, `https://www.openstreetmap.org/way/${id}`));
+    content.append(links);
+    const edit = element('p', '', 'links');
+    edit.append(link(`Edit way ${ways[0]} in iD`, `https://www.openstreetmap.org/edit?way=${ways[0]}`));
+    content.append(edit);
+  }
+  content.append(element('p', 'A disagreement is a lead, not proof: either dataset can be wrong. Check signs or imagery, '
+    + 'and do not copy values from this data into OSM.', 'caution'));
+  return content;
+}
+
 map.on('click', (e) => {
   const pad = 8;
   const box = [[e.point.x - pad, e.point.y - pad], [e.point.x + pad, e.point.y + pad]];
   const hits = map.queryRenderedFeatures(box, { layers: hitLayers() });
   if (!hits.length) return;
   const props = hits[0].properties;
+
+  if (mode === 'compare') {
+    new maplibregl.Popup({ maxWidth: '300px' }).setLngLat(e.lngLat).setDOMContent(comparePopup(props)).addTo(map);
+    return;
+  }
 
   const content = document.createElement('div');
   content.append(element('h3', props.name || props.ref || ROAD_CLASS[props.hw] || 'Road'));
@@ -501,12 +644,15 @@ const legend = document.getElementById('legend');
 const note = document.getElementById('note');
 const speedOptions = document.getElementById('speed-options');
 const fixOptions = document.getElementById('fix-options');
+const compareOptions = document.getElementById('compare-options');
 const modeButtons = [...document.querySelectorAll('[data-mode]')];
 
 const NOTES = {
   speed: 'Line width = number of lanes tagged in OpenStreetMap. Signs show the route (Interstate, US, state).',
   fix: 'Roads that may need fixing in OpenStreetMap. Faint grey = nothing flagged. Tap a road to see why it is flagged '
     + 'and open it in OSM. Rules are in docs/qa-rules.js.',
+  compare: 'Stretches where the official speed limit differs from OpenStreetMap. Lines are drawn only if the stretch '
+    + 'is at least as long as the slider. Tap one for the OSM ways involved.',
 };
 
 function swatch(color) {
@@ -518,8 +664,33 @@ function swatch(color) {
 
 function renderLegend() {
   note.textContent = NOTES[mode];
-  speedOptions.hidden = mode === 'fix';
+  speedOptions.hidden = mode !== 'speed';
   fixOptions.hidden = mode !== 'fix';
+  compareOptions.hidden = mode !== 'compare';
+  if (mode === 'compare') {
+    const ul = document.createElement('ul');
+    ul.className = 'rules';
+    for (const kind of COMPARE_KINDS) {
+      const label = document.createElement('label');
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.checked = compare.kinds[kind.id];
+      box.addEventListener('change', () => {
+        compare.kinds[kind.id] = box.checked;
+        applyVisibility();
+        renderCompareSummary();
+      });
+      const count = element('span', '', 'count');
+      count.dataset.kind = kind.id;
+      label.append(box, swatch(kind.color), document.createTextNode(kind.label), count);
+      const li = document.createElement('li');
+      li.append(label);
+      ul.append(li);
+    }
+    legend.replaceChildren(ul);
+    renderCompareSummary();
+    return;
+  }
   if (mode === 'fix') {
     const ul = document.createElement('ul');
     ul.className = 'rules';
@@ -577,16 +748,61 @@ for (const type of FIX_TYPES) {
   fixOptions.append(label);
 }
 
+// compare mode: distance slider
+const slider = document.createElement('input');
+slider.type = 'range';
+slider.min = '0';
+slider.max = String(MIN_MILES.length - 1);
+slider.step = '1';
+slider.value = String(compare.minIdx);
+slider.setAttribute('aria-label', 'Minimum stretch length in miles');
+const sliderLabel = element('div', '', 'slider-label');
+const sliderSummary = element('p', '', 'summary');
+const miles = (m) => `${m} ${m === 1 ? 'mile' : 'miles'}`;
+function renderCompareSlider() {
+  sliderLabel.replaceChildren(element('span', 'Only stretches of at least'), element('strong', miles(compareMiles())));
+}
+slider.addEventListener('input', () => {
+  compare.minIdx = Number(slider.value);
+  renderCompareSlider();
+  applyCompareFilters();
+  const url = new URL(location.href);
+  url.searchParams.set('min', String(compareMiles()));
+  history.replaceState(null, '', url);
+});
+renderCompareSlider();
+compareOptions.append(sliderLabel, slider, sliderSummary);
+
+/** "N stretches, M miles" for what the slider and checkboxes currently show, plus a count next to each category. */
+function renderCompareSummary() {
+  const min = compareMiles();
+  const features = compare.data.flatMap((d) => d?.features ?? []).filter((f) => f.properties.miles >= min);
+  let shown = 0;
+  let shownMiles = 0;
+  for (const kind of COMPARE_KINDS) {
+    const mine = features.filter((f) => f.properties.kind === kind.id);
+    const total = mine.reduce((sum, f) => sum + f.properties.miles, 0);
+    if (compare.kinds[kind.id]) { shown += mine.length; shownMiles += total; }
+    const badge = legend.querySelector(`.count[data-kind="${kind.id}"]`);
+    if (badge) badge.textContent = `${mine.length} · ${Math.round(total)} mi`;
+  }
+  sliderSummary.textContent = compare.data.some(Boolean)
+    ? `${shown} ${shown === 1 ? 'stretch' : 'stretches'} shown, ${Math.round(shownMiles)} miles in total`
+    : 'Loading official data…';
+}
+
 function setMode(next) {
   mode = next;
   for (const button of modeButtons) button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
   const url = new URL(location.href);
-  if (mode === 'fix') url.searchParams.set('mode', 'fix'); else url.searchParams.delete('mode');
+  if (mode === 'speed') url.searchParams.delete('mode'); else url.searchParams.set('mode', mode);
   history.replaceState(null, '', url);
   document.querySelectorAll('.maplibregl-popup').forEach((el) => el.remove());
   renderLegend();
   applyVisibility();
+  ensureCompareLayers();
 }
+document.querySelector('[data-mode="compare"]').hidden = !officialSources.length;
 for (const button of modeButtons) button.addEventListener('click', () => setMode(button.dataset.mode));
 setMode(mode);
 

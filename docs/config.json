@@ -74,5 +74,12 @@
       ],
       "zoom": 10
     }
+  ],
+  "official": [
+    {
+      "id": "KDOT",
+      "name": "Kansas DOT",
+      "url": "data/kdot-diff.geojson"
+    }
   ]
 }
